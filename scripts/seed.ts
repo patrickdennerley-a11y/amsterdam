@@ -12,6 +12,10 @@
  *   - VOYAGE_API_KEY
  */
 
+// Load environment variables from .env.local
+import * as dotenv from "dotenv";
+dotenv.config({ path: ".env.local" });
+
 import { createClient } from "@supabase/supabase-js";
 
 // ----------------------------------------------------------------------------
