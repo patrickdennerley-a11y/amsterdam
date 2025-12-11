@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { RadarAnimation } from "./radar-animation";
@@ -18,6 +18,23 @@ export function WaitingStatus({ userId, waitingCount }: WaitingStatusProps) {
   const router = useRouter();
   const [count, setCount] = useState(waitingCount);
 
+  // Check if user has been matched (used by both realtime and polling)
+  const checkMatchStatus = useCallback(async () => {
+    const supabase = createClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: profile } = await (supabase as any)
+      .from("profiles")
+      .select("status, current_match_id")
+      .eq("id", userId)
+      .single();
+
+    if (profile?.status === "matched" && profile?.current_match_id) {
+      router.push(`/chat/${profile.current_match_id}`);
+      return true;
+    }
+    return false;
+  }, [userId, router]);
+
   useEffect(() => {
     const supabase = createClient();
 
@@ -33,13 +50,24 @@ export function WaitingStatus({ userId, waitingCount }: WaitingStatusProps) {
           filter: `id=eq.${userId}`,
         },
         (payload: RealtimePostgresChangesPayload<Profile>) => {
+          // Try to get status from payload first
           if (payload.new && (payload.new as Profile).status === "matched") {
             const matchId = (payload.new as Profile).current_match_id;
-            router.push(`/chat/${matchId}`);
+            if (matchId) {
+              router.push(`/chat/${matchId}`);
+              return;
+            }
           }
+          // Fallback: if payload doesn't have all fields, fetch from DB
+          checkMatchStatus();
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        // If subscription fails, rely more on polling
+        if (status !== "SUBSCRIBED") {
+          console.warn("Realtime subscription status:", status);
+        }
+      });
 
     // Subscribe to waiting users count changes
     const countChannel = supabase
@@ -64,11 +92,21 @@ export function WaitingStatus({ userId, waitingCount }: WaitingStatusProps) {
       )
       .subscribe();
 
+    // Polling fallback: check every 5 seconds in case realtime misses the update
+    // This ensures users get redirected even if realtime fails
+    const pollInterval = setInterval(() => {
+      checkMatchStatus();
+    }, 5000);
+
+    // Also check immediately on mount in case already matched
+    checkMatchStatus();
+
     return () => {
       supabase.removeChannel(profileChannel);
       supabase.removeChannel(countChannel);
+      clearInterval(pollInterval);
     };
-  }, [userId, router]);
+  }, [userId, router, checkMatchStatus]);
 
   return (
     <Card className="w-full max-w-md">
